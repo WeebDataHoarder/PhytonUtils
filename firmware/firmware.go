@@ -87,7 +87,7 @@ func (entry Entry) Code() []byte {
 	for _, b := range entry.Blocks {
 		decBlock := slices.Clone(b.Block)
 
-		err := decBlock.Decrypt(encryption.NewFirmwareKeyMaterial(nil), !entry.compressed)
+		err := decBlock.Decrypt(encryption.NewFlashKeyMaterial(nil), !entry.compressed)
 		if err != nil {
 			panic(err)
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"git.gammaspectra.live/WeebDataHoarder/PhytonUtils/compression"
 	"git.gammaspectra.live/WeebDataHoarder/PhytonUtils/crc"
+	"git.gammaspectra.live/WeebDataHoarder/PhytonUtils/utils"
 	"io"
 	"slices"
 	"testing"
@@ -15,9 +16,13 @@ func TestEncryptedBlock_Decrypt_FirmwareUncompressed(t *testing.T) {
 	t.Parallel()
 
 	data := slices.Clone(sampleBlockFirmwareUncompressed)
-	err := data.Decrypt(NewFirmwareKeyMaterial(nil), true)
+	err := data.Decrypt(NewFlashKeyMaterial(nil), true)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	for i := 0; i < EncryptedBlockKeySize; i += 64 {
+		t.Logf("key %03x: %s", i, utils.HexOctets(data.KeyBlock()[i:i+64]))
 	}
 }
 
@@ -25,12 +30,18 @@ func TestEncryptedBlock_Decrypt_FirmwareCompressed(t *testing.T) {
 	t.Parallel()
 
 	data := slices.Clone(sampleBlockFirmwareCompressed)
-	err := data.Decrypt(NewFirmwareKeyMaterial(nil), false)
+	err := data.Decrypt(NewFlashKeyMaterial(nil), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	for i := 0; i < EncryptedBlockKeySize; i += 64 {
+		t.Logf("key %03x: %s", i, utils.HexOctets(data.KeyBlock()[i:i+64]))
+	}
+
 	rawCompressedData := data.DataBlock()[:sampleBlockFirmwareCompressedSize]
+
+	t.Logf("Compression data padding: %x", data.DataBlock()[sampleBlockFirmwareCompressedSize:])
 
 	decompressedData, err := compression.FirmwareBlockDecompress(rawCompressedData)
 	if err != nil {
@@ -109,7 +120,10 @@ func TestEncryptedBlock_EncryptDecrypt(t *testing.T) {
 	var seedBuf [4]byte
 	_, err = io.ReadFull(rand.Reader, seedBuf[:])
 	material := NewMemoryKeyMaterial(&SecureRandomKeyGenerator{})
-	b.Encrypt(material)
+	err = b.Encrypt(material)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	dec := slices.Clone(b)
 	err = dec.Decrypt(material, true)
@@ -119,6 +133,40 @@ func TestEncryptedBlock_EncryptDecrypt(t *testing.T) {
 
 	if bytes.Compare(data, dec.DataBlock()) != 0 {
 		t.Fatal("data does not match")
+	}
+}
+
+func TestEncryptedBlock_EncryptDecrypt_WithAlternateKey(t *testing.T) {
+	t.Parallel()
+
+	b := NewEncryptedBlock(64)
+	_, err := io.ReadFull(rand.Reader, b.DataBlock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := slices.Clone(b.DataBlock())
+
+	var seedBuf [4]byte
+	_, err = io.ReadFull(rand.Reader, seedBuf[:])
+	generator := BorlandRandKeyGenerator(binary.LittleEndian.Uint32(seedBuf[:]))
+	material := NewFlashKeyMaterial(NewMangleIndexOffsetGeneratorWrapper(&generator, MangleIndexAlternateKey0))
+	err = b.Encrypt(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dec := slices.Clone(b)
+	err = dec.Decrypt(material, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Compare(data, dec.DataBlock()) != 0 {
+		t.Fatal("data does not match")
+	}
+
+	if dec.MangleIndex() < MangleIndexAlternateKey0 {
+		t.Fatal("data did not use alternate key")
 	}
 }
 
@@ -135,9 +183,12 @@ func TestEncryptedBlock_EncryptDecrypt_WithDeviceKey(t *testing.T) {
 	var seedBuf [4]byte
 	_, err = io.ReadFull(rand.Reader, seedBuf[:])
 	generator := BorlandRandKeyGenerator(binary.LittleEndian.Uint32(seedBuf[:]))
-	material := NewFirmwareKeyMaterial(&generator)
-	material.DeviceKey = sampleDeviceMangleKey
-	b.Encrypt(material)
+	material := NewFlashKeyMaterial(NewMangleIndexGeneratorWrapper(&generator, MangleIndexDeviceKey))
+	material.DeviceKey = sampleDeviceMangleKeyOffset6
+	err = b.Encrypt(material)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	dec := slices.Clone(b)
 	err = dec.Decrypt(material, true)
@@ -147,6 +198,10 @@ func TestEncryptedBlock_EncryptDecrypt_WithDeviceKey(t *testing.T) {
 
 	if bytes.Compare(data, dec.DataBlock()) != 0 {
 		t.Fatal("data does not match")
+	}
+
+	if dec.MangleIndex() < MangleIndexAlternateKey0 {
+		t.Fatal("data did not use alternate key")
 	}
 }
 
@@ -158,7 +213,10 @@ func TestEncryptedBlock_Encrypt(t *testing.T) {
 	b := NewEncryptedBlock(0)
 	generator := BorlandRandKeyGenerator(0)
 	material := NewMemoryKeyMaterial(&generator)
-	b.Encrypt(material)
+	err = b.Encrypt(material)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	d1 := slices.Clone(b)
 	d2 := slices.Clone(sampleBlockMemoryEmpty)
@@ -185,6 +243,22 @@ func TestEncryptedBlock_Encrypt(t *testing.T) {
 	}
 }
 
+func TestEncryptedBlock_Encrypt_Zero(t *testing.T) {
+	t.Parallel()
+
+	b := NewEncryptedBlock(8)
+	material := NewMemoryKeyMaterial(&ZeroKeyGenerator{})
+	err := b.Encrypt(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < EncryptedBlockKeySize; i += 64 {
+		t.Logf("%s", utils.HexOctets(b.KeyBlock()[i:i+64]))
+	}
+	t.Logf("DATA %s", utils.HexOctets(b.DataBlock()))
+}
+
 func TestBruteforceSeed_Short(t *testing.T) {
 	data := slices.Clone(sampleBlockMemoryEmpty)
 
@@ -202,24 +276,23 @@ func TestBruteforceSeed_Short(t *testing.T) {
 	}
 }
 
-/*
 func TestBruteforceSeed_FirmwareUncompressed(t *testing.T) {
 	data := slices.Clone(sampleBlockFirmwareUncompressed)
 
-	seeds, err := BruteforceBorlandSeed(data, NewFirmwareKeyMaterial(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, seed := range seeds {
-		t.Logf("found seed = 0x%08x", seed)
-	}
-
-	if len(seeds) != 2 {
-		t.Fatal("seeds not found")
+	_, err := BruteforceBorlandSeed(data, NewFlashKeyMaterial(nil))
+	if err == nil || err.Error() != "not a borland rand seed" {
+		t.Fatal("error expected: \"not a borland rand seed\"")
 	}
 }
-*/
+
+func TestBruteforceSeed_FirmwareCompressed(t *testing.T) {
+	data := slices.Clone(sampleBlockFirmwareCompressed)
+
+	_, err := BruteforceBorlandSeed(data, NewFlashKeyMaterial(nil))
+	if err == nil || err.Error() != "not a borland rand seed" {
+		t.Fatal("error expected: \"not a borland rand seed\"")
+	}
+}
 
 func BenchmarkEncryptedBlock_Encrypt(b *testing.B) {
 	const dataSize = 64
@@ -243,7 +316,10 @@ func BenchmarkEncryptedBlock_Encrypt(b *testing.B) {
 		for pb.Next() {
 			buf.Reset()
 			copy(buf.DataBlock(), data)
-			buf.Encrypt(material)
+			err := buf.Encrypt(material)
+			if err != nil {
+				panic(err)
+			}
 		}
 	})
 }
@@ -268,7 +344,10 @@ func BenchmarkEncryptedBlock_Decrypt(b *testing.B) {
 		generator := BorlandRandKeyGenerator(binary.LittleEndian.Uint32(seedBuf[:]))
 		material.Generator = &generator
 
-		encryptedBlock.Encrypt(material)
+		err = encryptedBlock.Encrypt(material)
+		if err != nil {
+			b.Fatal(err)
+		}
 
 		buf := NewEncryptedBlock(len(encryptedBlock.DataBlock()))
 		for pb.Next() {

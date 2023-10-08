@@ -6,15 +6,17 @@ import "encoding/binary"
 const BorlandRandMultiplier = 0x015A4E35
 
 // BorlandRand Borland C++ rand()
-func BorlandRand(seed uint32) uint32 {
-	return seed*BorlandRandMultiplier + 1
+func BorlandRand(seed uint32) (newSeed uint32, output uint16) {
+	newSeed = seed*BorlandRandMultiplier + 1
+	return newSeed, uint16(newSeed>>16) & 0x7FFF
 }
 
 func BorlandRandXORBytes(src, dst []byte, seed uint32) (newSeed uint32) {
 	_ = dst[len(src)-1]
+	var output uint16
 	for i := range src {
-		seed = BorlandRand(seed)
-		dst[i] = src[i] ^ byte(seed>>16)
+		seed, output = BorlandRand(seed)
+		dst[i] = src[i] ^ byte(output)
 	}
 	return seed
 }

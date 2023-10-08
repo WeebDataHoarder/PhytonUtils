@@ -10,7 +10,10 @@ import (
 	"io"
 )
 
+const FlashAreaPublicSignature = 0x19601217
+
 type FlashAreaData struct {
+	// PublicSignature Should always be FlashAreaPublicSignature
 	PublicSignature uint32
 	StructLen       uint32
 	Data            []byte

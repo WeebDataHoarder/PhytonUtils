@@ -2,13 +2,43 @@ package encryption
 
 import (
 	"encoding/binary"
+	"errors"
 	"math"
 	"runtime"
 	"slices"
 	"sync"
 )
 
+// IsKeyBorlandSeedLikely The generator used on BorlandRand does not set the highest bit, as such it can be detected
+func IsKeyBorlandSeedLikely(b EncryptedBlock, material KeyMaterial) bool {
+	data := slices.Clone(b)
+	err := data.Decrypt(material, false)
+	if err != nil {
+		return false
+	}
+
+	for i := EncryptedBlockMangleKeyOffset; i < EncryptedBlockCRC1Offset; i += 2 {
+		if binary.LittleEndian.Uint16(data[i:])&0x8000 > 0 {
+			return false
+		}
+	}
+
+	for i := EncryptedBlockPaddingKeyOffset; i < EncryptedBlockKeySize; i += 2 {
+		if binary.LittleEndian.Uint16(data[i:])&0x8000 > 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
 func BruteforceBorlandSeed(b EncryptedBlock, material KeyMaterial) ([]uint32, error) {
+	//TODO: this can be done more efficiently as LCG leaks 16 bits each time, by backwards looping and solving across uint16 range
+
+	if !IsKeyBorlandSeedLikely(b, material) {
+		return nil, errors.New("not a borland rand seed")
+	}
+
 	data := slices.Clone(b)
 	err := data.Decrypt(material, false)
 	if err != nil {
@@ -19,9 +49,9 @@ func BruteforceBorlandSeed(b EncryptedBlock, material KeyMaterial) ([]uint32, er
 
 	perCpu := math.MaxUint32 / numCpu
 
-	firstValue := binary.LittleEndian.Uint16(data[2:])
+	firstValue := binary.LittleEndian.Uint16(data[EncryptedBlockMangleKeyOffset:])
 
-	secondValue := binary.LittleEndian.Uint16(data[4:])
+	secondValue := binary.LittleEndian.Uint16(data[EncryptedBlockMangleKeyOffset+2:])
 
 	var foundSeeds []uint32
 	var foundSeedsLock sync.Mutex
@@ -38,24 +68,24 @@ func BruteforceBorlandSeed(b EncryptedBlock, material KeyMaterial) ([]uint32, er
 			}
 
 			for {
-				currentSeed := BorlandRand(seed)
-				seedA := uint16((currentSeed << 1) >> 0x11)
-				currentSeed = BorlandRand(currentSeed)
-				seedB := uint16((currentSeed << 1) >> 0x11)
+				currentSeed, output := BorlandRand(seed)
+				seedA := output
+				currentSeed, output = BorlandRand(currentSeed)
+				seedB := output
 
 				if seedA == firstValue && seedB == secondValue {
 					if func() bool {
-						for i := 4; i < 16; i += 2 {
-							currentSeed = BorlandRand(currentSeed)
-							if binary.LittleEndian.Uint16(data[2+i:]) != uint16((currentSeed<<1)>>0x11) {
+						for i := EncryptedBlockMangleKeyOffset + 4; i < EncryptedBlockCRC1Offset; i += 2 {
+							currentSeed, output = BorlandRand(currentSeed)
+							if binary.LittleEndian.Uint16(data[i:]) != output {
 								return false
 							}
 						}
 
-						for i := 0; i < 0xf3; i++ {
-							currentSeed = BorlandRand(currentSeed)
+						for i := EncryptedBlockPaddingKeyOffset; i < EncryptedBlockKeySize; i += 2 {
+							currentSeed, output = BorlandRand(currentSeed)
 
-							if binary.LittleEndian.Uint16(data[0x1a+i*2:]) != uint16((currentSeed<<1)>>0x11) {
+							if binary.LittleEndian.Uint16(data[i:]) != output {
 								return false
 							}
 						}

@@ -9,6 +9,7 @@ These utilities allow researchers to inspect the devices and work with them dire
 * Decoding of Firmware files, both `Phyton` format and `AlmaCode` format
 * Decryption of Firmware Blocks
 * Encryption of Firmware Blocks
+* Decryption of device unique id encrypted code blocks in ROM
 * Decompression of Custom compressed data
 * Compression to Custom compressed data
 * Calculate custom CRC of data

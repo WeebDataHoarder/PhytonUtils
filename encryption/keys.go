@@ -13,14 +13,14 @@ const MangleKeyRounds = 48
 // MangleKeyData Key entries of 128-bit length
 type MangleKeyData [MangleKeyDataSize]byte
 
-func (d MangleKeyData) RoundKey(round int32) uint32 {
-	return binary.LittleEndian.Uint32(d[(round%4)*4:])
+func (d MangleKeyData) RoundKey(round int) uint32 {
+	return binary.LittleEndian.Uint32(d[(round&3)<<2:])
 }
 
 type MangleKeyTable [8]MangleKeyData
 
 var HardcodedMangleTable = MangleKeyTable{
-	/* Slot 0 is used by OuterMangleKeyOffsetFirmware for outer key mangle */
+	/* Slot 0 is used by OuterMangleKeyOffsetFlash for outer key mangle */
 	/*0x00*/ {0x6f, 0xc0, 0x39, 0x05, 0x01, 0x58, 0x23, 0x3a, 0x80, 0xda, 0xb4, 0x1b, 0x65, 0x6a, 0x91, 0x44},
 	/* Slot 1 is used by OuterMangleKeyOffsetDeviceId for outer key mangle */
 	/*0x01*/ {0x35, 0xcb, 0x01, 0x5b, 0xfb, 0xa4, 0x98, 0xb4, 0x82, 0x6d, 0x48, 0xe9, 0x10, 0x50, 0x94, 0xf4},

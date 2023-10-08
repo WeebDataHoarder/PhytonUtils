@@ -56,6 +56,9 @@ func decryptRound(roundKey uint32, dataA, dataB, round uint32) (uint32, uint32) 
 }
 ```
 
+Each round is composed of modular addition / subtractions mod 2^32, XOR, and logical shift left / right.
+Each round has a round constant (the round number) added to the round key, a very simple key scheduling.
+
 ### Mode of operation
 The cipher operates in ECB mode. As such, blocks containing the same value will encrypt equally.
 
@@ -63,15 +66,18 @@ Attacking this cipher without knowledge of key material or algorithm is trivial,
 given access to an Encryption Oracle and starting knowledge of a full 64-bit block in target material.
 
 
+### Mangle Index
+Mangle index is used to select the different key schedules from the tables below for the full Mangle construct.
+
 ### Hardcoded Mangle Key Table
 
-This table is hardcoded in firmware, and seems to be used across all devices known.
+This table is hardcoded in firmware, and seems to be the same across all devices known.
 
 It gets used on the Outer Mangle and the Inner Mangle, depending on the selected Mangle Index.
 
 | Offset | Identifier |                     Key Data                     |
 |:------:|:----------:|:------------------------------------------------:|
-|   0    | _Firmware_ | `0x0539c06f, 0x3a235801, 0x1bb4da80, 0x44916a65` |
+|   0    |  _Flash_   | `0x0539c06f, 0x3a235801, 0x1bb4da80, 0x44916a65` |
 |   1    | _DeviceId_ | `0x5b01cb35, 0xb498a4fb, 0xe9486d82, 0xf4945010` |
 |   2    |            | `0xe8babcec, 0x2aa73df8, 0x4cf9f79c, 0x886d73e7` |
 |   3    |            | `0x25483503, 0xb1a0a8af, 0x24a745b2, 0xf5e21339` |
@@ -81,7 +87,7 @@ It gets used on the Outer Mangle and the Inner Mangle, depending on the selected
 |   7    |            | `0x52f33e6f, 0x4d69a2f9, 0x77ab77c4, 0x468f4508` |
 
 Several offsets from this table are used for either the outer mangle or other purposes.
-* #0: _Firmware Outer Mangle Key_
+* #0: _Flash Outer Mangle Key_
 * #1: _Device Id Outer Mangle Key_
 * #6: _Memory Outer Mangle Key_
 
@@ -106,6 +112,11 @@ It gets used on the Inner Mangle, depending on the selected Mangle Index.
 ### Data Mangle Key
 This key is randomly generated via various methods. It is 512 bytes long,
 and includes the CRC of the original data being encrypted (before compression) twice.
+
+The device generated Mangle key has an effective key size of 32-bit or lower,
+due to the usage of a BorlandC LCG as entropy source, seeded with an on-device counter.
+Additionally, some devices can be caused to fault into a static counter, generating the same key always.
+
 
 Structure is as follows:
 ```

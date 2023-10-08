@@ -65,51 +65,65 @@ func (b EncryptedBlock) generateKeyBlock(generator KeyGenerator) (mangleIndex ui
 }
 
 const (
-	mangleIndexNormalKey0 = iota
-	mangleIndexNormalKey1
-	mangleIndexNormalKey2
-	mangleIndexNormalKey3
-	mangleIndexNormalKey4
-	mangleIndexNormalKey5
-	mangleIndexNormalKey6
-	mangleIndexNormalKey7
+	MangleIndexNormalKey0 = iota
+	MangleIndexNormalKey1
+	MangleIndexNormalKey2
+	MangleIndexNormalKey3
+	MangleIndexNormalKey4
+	MangleIndexNormalKey5
+	MangleIndexNormalKey6
+	MangleIndexNormalKey7
 
-	mangleIndexAlternateKey0
-	mangleIndexAlternateKey1
-	mangleIndexAlternateKey2
-	mangleIndexAlternateKey3
-	mangleIndexAlternateKey4
-	mangleIndexAlternateKey5
-	mangleIndexAlternateKey6
-	mangleIndexAlternateKey7
+	MangleIndexAlternateKey0
+	MangleIndexAlternateKey1
+	MangleIndexAlternateKey2
+	MangleIndexAlternateKey3
+	MangleIndexAlternateKey4
+	MangleIndexAlternateKey5
+	MangleIndexAlternateKey6
+	MangleIndexAlternateKey7
 
-	mangleIndexDeviceKey = 0xffff
+	MangleIndexDeviceKey = 0xffff
 )
 
-func (b EncryptedBlock) Encrypt(material KeyMaterial) {
+func (b EncryptedBlock) Encrypt(material KeyMaterial) error {
 
 	mangleIndex := b.generateKeyBlock(material.Generator)
 
 	// Mangle of data
 	b.MangleKey().Encrypt(b.DataBlock())
 
+	var keyData MangleKeyData
+
 	// Inner mangle of key
-	if material.AlternateMangleKey != nil {
-		material.AlternateMangleKey[mangleIndex].Encrypt(b.MangleKeyBlock())
-
-		binary.LittleEndian.PutUint16(b[EncryptedBlockMangleIndexOffset:], uint16(mangleIndex+mangleIndexAlternateKey0))
-	} else if material.DeviceKey != nil {
-		material.DeviceKey.Encrypt(b.MangleKeyBlock())
-
-		binary.LittleEndian.PutUint16(b[EncryptedBlockMangleIndexOffset:], mangleIndexDeviceKey)
+	if mangleIndex <= MangleIndexNormalKey7 {
+		keyData = HardcodedMangleTable[mangleIndex]
+	} else if mangleIndex <= MangleIndexAlternateKey7 {
+		if material.AlternateKeyTable == nil {
+			keyData = AlternateMangleTable[mangleIndex-MangleIndexAlternateKey0]
+		} else {
+			keyData = material.AlternateKeyTable[mangleIndex-MangleIndexAlternateKey0]
+		}
 	} else {
-		HardcodedMangleTable[mangleIndex].Encrypt(b.MangleKeyBlock())
+		if mangleIndex != MangleIndexDeviceKey {
+			return errors.New("invalid key number")
+		}
 
-		binary.LittleEndian.PutUint16(b[EncryptedBlockMangleIndexOffset:], uint16(mangleIndex))
+		if material.DeviceKey == nil {
+			return errors.New("unsupported device key")
+		}
+
+		keyData = *material.DeviceKey
 	}
+
+	keyData.Encrypt(b.MangleKeyBlock())
+
+	binary.LittleEndian.PutUint16(b[EncryptedBlockMangleIndexOffset:], uint16(mangleIndex))
 
 	// Outer mangle of key
 	HardcodedMangleTable[material.OuterKeyOffset].Encrypt(b.KeyBlock())
+
+	return nil
 }
 
 func (b EncryptedBlock) Decrypt(material KeyMaterial, verifyCrc bool) (err error) {
@@ -119,21 +133,21 @@ func (b EncryptedBlock) Decrypt(material KeyMaterial, verifyCrc bool) (err error
 	mangleIndex := b.MangleIndex()
 
 	var keyData MangleKeyData
-	if mangleIndex <= mangleIndexNormalKey7 {
+	if mangleIndex <= MangleIndexNormalKey7 {
 		keyData = HardcodedMangleTable[mangleIndex]
-	} else if mangleIndex <= mangleIndexAlternateKey7 {
-		if material.AlternateMangleKey != nil {
-			keyData = material.AlternateMangleKey[mangleIndex-mangleIndexAlternateKey0]
+	} else if mangleIndex <= MangleIndexAlternateKey7 {
+		if material.AlternateKeyTable == nil {
+			keyData = AlternateMangleTable[mangleIndex-MangleIndexAlternateKey0]
 		} else {
-			keyData = AlternateMangleTable[mangleIndex-mangleIndexAlternateKey0]
+			keyData = material.AlternateKeyTable[mangleIndex-MangleIndexAlternateKey0]
 		}
 	} else {
-		if mangleIndex != mangleIndexDeviceKey {
+		if mangleIndex != MangleIndexDeviceKey {
 			return errors.New("invalid key number")
 		}
 
 		if material.DeviceKey == nil {
-			return errors.New("unsupported hardware key")
+			return errors.New("unsupported device key")
 		}
 
 		keyData = *material.DeviceKey
