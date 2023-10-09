@@ -7,14 +7,14 @@ import (
 )
 
 type KeyGenerator interface {
-	Fill(data []byte)
+	FillKeyBlock(data []byte)
 	MangleIndex() uint32
 }
 
 // SecureRandomKeyGenerator Generates random numbers using the system secure random number generator
 type SecureRandomKeyGenerator struct{}
 
-func (g *SecureRandomKeyGenerator) Fill(data []byte) {
+func (g *SecureRandomKeyGenerator) FillKeyBlock(data []byte) {
 	io.ReadFull(rand.Reader, data)
 }
 
@@ -27,7 +27,7 @@ func (g *SecureRandomKeyGenerator) MangleIndex() uint32 {
 // BorlandRandKeyGenerator Generates random numbers with its value as current seed
 type BorlandRandKeyGenerator uint32
 
-func (g *BorlandRandKeyGenerator) Fill(data []byte) {
+func (g *BorlandRandKeyGenerator) FillKeyBlock(data []byte) {
 	var output uint16
 	seed := uint32(*g)
 	for i := 0; i < len(data); i += 2 {
@@ -47,10 +47,33 @@ func (g *BorlandRandKeyGenerator) MangleIndex() uint32 {
 	return mangleIndex
 }
 
+// BorlandRandByteKeyGenerator Generates random numbers with its value as current seed
+type BorlandRandByteKeyGenerator uint32
+
+func (g *BorlandRandByteKeyGenerator) FillKeyBlock(data []byte) {
+	var output uint16
+	seed := uint32(*g)
+	for i := 0; i < len(data); i++ {
+		seed, output = BorlandRand(seed)
+		data[i] = uint8(output)
+	}
+	*g = BorlandRandByteKeyGenerator(seed)
+}
+
+func (g *BorlandRandByteKeyGenerator) MangleIndex() uint32 {
+	var output uint16
+	seed := uint32(*g)
+	seed, output = BorlandRand(seed)
+	mangleIndex := uint32(output & 0x7)
+	*g = BorlandRandByteKeyGenerator(seed)
+
+	return mangleIndex
+}
+
 // ZeroKeyGenerator Always outputs zero
 type ZeroKeyGenerator struct{}
 
-func (g *ZeroKeyGenerator) Fill(data []byte) {
+func (g *ZeroKeyGenerator) FillKeyBlock(data []byte) {
 	clear(data)
 }
 
@@ -63,8 +86,8 @@ type mangleIndexGeneratorWrapper struct {
 	mangleIndex uint32
 }
 
-func (w *mangleIndexGeneratorWrapper) Fill(data []byte) {
-	w.generator.Fill(data)
+func (w *mangleIndexGeneratorWrapper) FillKeyBlock(data []byte) {
+	w.generator.FillKeyBlock(data)
 }
 
 func (w *mangleIndexGeneratorWrapper) MangleIndex() uint32 {
@@ -83,8 +106,8 @@ type mangleIndexOffsetGeneratorWrapper struct {
 	offset    uint32
 }
 
-func (w *mangleIndexOffsetGeneratorWrapper) Fill(data []byte) {
-	w.generator.Fill(data)
+func (w *mangleIndexOffsetGeneratorWrapper) FillKeyBlock(data []byte) {
+	w.generator.FillKeyBlock(data)
 }
 
 func (w *mangleIndexOffsetGeneratorWrapper) MangleIndex() uint32 {

@@ -1,6 +1,13 @@
 package crc
 
-var CRCTable = func() [256]uint32 {
+import (
+	"encoding/binary"
+)
+
+const Polynomial uint32 = 0x04C11DB7
+const InitialValue CRC = 0xFFFFFFFF
+
+var Table = func(polynomial uint64) [256]uint32 {
 	polynomialDivision := func(polynomial, input uint64, len uint) uint64 {
 		mask := uint64(1)<<len - 1
 
@@ -17,19 +24,15 @@ var CRCTable = func() [256]uint32 {
 	}
 	var table [256]uint32
 	for i := 0; i < 256; i++ {
-		table[i] = uint32(polynomialDivision(0x04C11DB7, uint64(i), 32))
+		table[i] = uint32(polynomialDivision(polynomial, uint64(i), 32))
 	}
 	return table
-}()
+}(uint64(Polynomial))
 
-type CRC struct {
-	crc uint32
-}
+type CRC uint32
 
-func NewCRC() *CRC {
-	return &CRC{
-		crc: 0xFFFFFFFF,
-	}
+func NewCRC() CRC {
+	return InitialValue
 }
 
 func (c *CRC) Update(buf []byte) {
@@ -39,10 +42,7 @@ func (c *CRC) Update(buf []byte) {
 
 	for chunksLeft := chunks; chunksLeft > 0; chunksLeft-- {
 		index := (chunks - chunksLeft) * chunkSize
-		c.crc = CRCTable[((buf[index+3]&255)^byte(c.crc>>24))] ^ (c.crc << 8)
-		c.crc = CRCTable[((buf[index+2]&255)^byte(c.crc>>24))] ^ (c.crc << 8)
-		c.crc = CRCTable[((buf[index+1]&255)^byte(c.crc>>24))] ^ (c.crc << 8)
-		c.crc = CRCTable[((buf[index]&255)^byte(c.crc>>24))] ^ (c.crc << 8)
+		c.UpdateUint32(binary.LittleEndian.Uint32(buf[index:]))
 	}
 
 	if remainder != 0 {
@@ -52,8 +52,19 @@ func (c *CRC) Update(buf []byte) {
 	}
 }
 
+func (c *CRC) UpdateUint32(data uint32) {
+	crc := uint32(*c)
+
+	crc = Table[(byte(data>>24)^byte(crc>>24))] ^ (crc << 8)
+	crc = Table[(byte(data>>16)^byte(crc>>24))] ^ (crc << 8)
+	crc = Table[(byte(data>>8)^byte(crc>>24))] ^ (crc << 8)
+	crc = Table[(byte(data)^byte(crc>>24))] ^ (crc << 8)
+
+	*c = CRC(crc)
+}
+
 func (c *CRC) Sum32() uint32 {
-	return c.crc
+	return uint32(*c)
 }
 
 func CalculateCRC(buf []byte) uint32 {

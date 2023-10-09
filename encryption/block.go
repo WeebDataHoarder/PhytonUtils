@@ -3,6 +3,7 @@ package encryption
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"git.gammaspectra.live/WeebDataHoarder/PhytonUtils/crc"
 )
 
@@ -50,18 +51,23 @@ func (b EncryptedBlock) Reset() {
 	clear(b)
 }
 
-func (b EncryptedBlock) generateKeyBlock(generator KeyGenerator) (mangleIndex uint32) {
+func (b EncryptedBlock) generateKeyBlock(material KeyMaterial) (mangleIndex uint32) {
 	_ = b[EncryptedBlockKeySize-1]
 
-	crcValue := crc.CalculateCRC(b.DataBlock())
+	var crcValue uint32
+	if material.CRC != nil {
+		crcValue = material.CRC(b.DataBlock())
+	} else {
+		crcValue = crc.CalculateCRC(b.DataBlock())
+	}
 
 	binary.LittleEndian.PutUint32(b[EncryptedBlockCRC1Offset:], crcValue)
 	binary.LittleEndian.PutUint32(b[EncryptedBlockCRC2Offset:], crcValue)
 
-	generator.Fill(b[EncryptedBlockMangleKeyOffset:EncryptedBlockCRC1Offset])
-	generator.Fill(b[EncryptedBlockPaddingKeyOffset:EncryptedBlockKeySize])
+	material.Generator.FillKeyBlock(b[EncryptedBlockMangleKeyOffset:EncryptedBlockCRC1Offset])
+	material.Generator.FillKeyBlock(b[EncryptedBlockPaddingKeyOffset:EncryptedBlockKeySize])
 
-	return generator.MangleIndex()
+	return material.Generator.MangleIndex()
 }
 
 const (
@@ -88,7 +94,7 @@ const (
 
 func (b EncryptedBlock) Encrypt(material KeyMaterial) error {
 
-	mangleIndex := b.generateKeyBlock(material.Generator)
+	mangleIndex := b.generateKeyBlock(material)
 
 	// Mangle of data
 	b.MangleKey().Encrypt(b.DataBlock())
@@ -166,10 +172,15 @@ func (b EncryptedBlock) Decrypt(material KeyMaterial, verifyCrc bool) (err error
 	}
 
 	if verifyCrc {
-		calculatedCrc := crc.CalculateCRC(b.DataBlock())
+		var calculatedCrc uint32
+		if material.CRC != nil {
+			calculatedCrc = material.CRC(b.DataBlock())
+		} else {
+			calculatedCrc = crc.CalculateCRC(b.DataBlock())
+		}
 
 		if calculatedCrc != crc1 {
-			return errors.New("data CRC invalid")
+			return fmt.Errorf("data CRC not matching: expected %08x, got %08x", crc1, calculatedCrc)
 		}
 	}
 

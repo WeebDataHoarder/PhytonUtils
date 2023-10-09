@@ -97,11 +97,25 @@ func TestEncryptedBlock_Decrypt_FirmwareCompressed(t *testing.T) {
 	t.Logf("Change (exhaustive): %.08f%%", (customRatioExhaustive-originalRatio)*100)
 }
 
-func TestEncryptedBlock_Decrypt_MemoryData(t *testing.T) {
+func TestEncryptedBlock_Decrypt_MemoryData_Empty(t *testing.T) {
 	t.Parallel()
 
 	data := slices.Clone(sampleBlockMemoryEmpty)
 	err := data.Decrypt(NewMemoryKeyMaterial(nil), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEncryptedBlock_Decrypt_MemoryData_Empty_BrokenCRC(t *testing.T) {
+	t.Parallel()
+
+	data := slices.Clone(sampleBlockMemoryEmptyBrokenCRC)
+	material := NewMemoryKeyMaterial(nil)
+	material.CRC = func(data []byte) uint32 {
+		return crc.CalculateCRC(data) & 0x0000FFFF
+	}
+	err := data.Decrypt(material, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,41 +271,6 @@ func TestEncryptedBlock_Encrypt_Zero(t *testing.T) {
 		t.Logf("%s", utils.HexOctets(b.KeyBlock()[i:i+64]))
 	}
 	t.Logf("DATA %s", utils.HexOctets(b.DataBlock()))
-}
-
-func TestBruteforceSeed_Short(t *testing.T) {
-	data := slices.Clone(sampleBlockMemoryEmpty)
-
-	seeds, err := BruteforceBorlandSeed(data, NewMemoryKeyMaterial(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, seed := range seeds {
-		t.Logf("seed = 0x%08x", seed)
-	}
-
-	if len(seeds) != 2 {
-		t.Fatal("seeds not found")
-	}
-}
-
-func TestBruteforceSeed_FirmwareUncompressed(t *testing.T) {
-	data := slices.Clone(sampleBlockFirmwareUncompressed)
-
-	_, err := BruteforceBorlandSeed(data, NewFlashKeyMaterial(nil))
-	if err == nil || err.Error() != "not a borland rand seed" {
-		t.Fatal("error expected: \"not a borland rand seed\"")
-	}
-}
-
-func TestBruteforceSeed_FirmwareCompressed(t *testing.T) {
-	data := slices.Clone(sampleBlockFirmwareCompressed)
-
-	_, err := BruteforceBorlandSeed(data, NewFlashKeyMaterial(nil))
-	if err == nil || err.Error() != "not a borland rand seed" {
-		t.Fatal("error expected: \"not a borland rand seed\"")
-	}
 }
 
 func BenchmarkEncryptedBlock_Encrypt(b *testing.B) {

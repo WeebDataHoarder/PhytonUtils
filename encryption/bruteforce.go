@@ -3,10 +3,8 @@ package encryption
 import (
 	"encoding/binary"
 	"errors"
-	"math"
-	"runtime"
+	"math/bits"
 	"slices"
-	"sync"
 )
 
 // IsKeyBorlandSeedLikely The generator used on BorlandRand does not set the highest bit, as such it can be detected
@@ -33,7 +31,6 @@ func IsKeyBorlandSeedLikely(b EncryptedBlock, material KeyMaterial) bool {
 }
 
 func BruteforceBorlandSeed(b EncryptedBlock, material KeyMaterial) ([]uint32, error) {
-	//TODO: this can be done more efficiently as LCG leaks 16 bits each time, by backwards looping and solving across uint16 range
 
 	if !IsKeyBorlandSeedLikely(b, material) {
 		return nil, errors.New("not a borland rand seed")
@@ -44,76 +41,159 @@ func BruteforceBorlandSeed(b EncryptedBlock, material KeyMaterial) ([]uint32, er
 	if err != nil {
 		return nil, err
 	}
+	// Efficient search as LCG leaks 15 bits each time, by backwards looping and solving across uint17 range
 
-	numCpu := runtime.NumCPU()
+	const dataSize = 2
+	const stateDataStart = EncryptedBlockMangleKeyOffset
+	const stateDataEnd = EncryptedBlockCRC1Offset - dataSize
+	validStateBits := bits.OnesCount32(BorlandRandOutputMask)
+	validStateInverseBits := bits.OnesCount32(^BorlandRandOutputMask)
+	var stateOutputMask = BorlandRandOutputMask << BorlandRandOutputShift
 
-	perCpu := math.MaxUint32 / numCpu
+	statesBuf := make([]uint32, 0, 32-validStateBits)
+	getPossibleStates := func(state uint32, previousOutput uint16) (states []uint32) {
+		var seed, prevSeed uint32
 
-	firstValue := binary.LittleEndian.Uint16(data[EncryptedBlockMangleKeyOffset:])
+		states = statesBuf[:0]
 
-	secondValue := binary.LittleEndian.Uint16(data[EncryptedBlockMangleKeyOffset+2:])
+		var limit uint32 = 1 << validStateInverseBits
+		for n := uint32(0); n < limit; n++ {
+			// Fills the output part of the state
+			seed = (state & stateOutputMask) | ((n & (^uint32(0xFFFF))) << validStateBits) | (n & 0xFFFF)
 
-	var foundSeeds []uint32
-	var foundSeedsLock sync.Mutex
+			prevSeed = BorlandRandPreviousSeed(seed)
 
-	var wg sync.WaitGroup
-	for cpu := 0; cpu < numCpu; cpu++ {
-		wg.Add(1)
-		go func(cpu int) {
-			defer wg.Done()
-			seed := uint32(cpu * perCpu)
-			endSeed := seed + uint32(perCpu)
-			if cpu == (numCpu - 1) {
-				endSeed = math.MaxUint32
+			if BorlandRandOutput(prevSeed) == previousOutput {
+				states = append(states, prevSeed)
 			}
-
-			for {
-				currentSeed, output := BorlandRand(seed)
-				seedA := output
-				currentSeed, output = BorlandRand(currentSeed)
-				seedB := output
-
-				if seedA == firstValue && seedB == secondValue {
-					if func() bool {
-						for i := EncryptedBlockMangleKeyOffset + 4; i < EncryptedBlockCRC1Offset; i += 2 {
-							currentSeed, output = BorlandRand(currentSeed)
-							if binary.LittleEndian.Uint16(data[i:]) != output {
-								return false
-							}
-						}
-
-						for i := EncryptedBlockPaddingKeyOffset; i < EncryptedBlockKeySize; i += 2 {
-							currentSeed, output = BorlandRand(currentSeed)
-
-							if binary.LittleEndian.Uint16(data[i:]) != output {
-								return false
-							}
-						}
-
-						return true
-					}() {
-						func() {
-							foundSeedsLock.Lock()
-							defer foundSeedsLock.Unlock()
-							foundSeeds = append(foundSeeds, seed)
-						}()
-					}
-				}
-
-				if seed == endSeed {
-					break
-				}
-				seed++
-			}
-
-			return
-
-		}(cpu)
+		}
+		return states
 	}
 
-	wg.Wait()
+	var possibleStates []uint32
 
-	slices.Sort(foundSeeds)
+	stateIndex := stateDataEnd
+	{
+		previousOutput := binary.LittleEndian.Uint16(data.KeyBlock()[stateIndex-dataSize:])
+		var nextStates []uint32
+		previousState := (uint32(binary.LittleEndian.Uint16(data.KeyBlock()[stateIndex:])) << BorlandRandOutputShift) & stateOutputMask
+		states := getPossibleStates(previousState, previousOutput)
+		if len(nextStates) == 0 {
+			nextStates = states
+			states = slices.Compact(states)
+			nextStates = slices.Clone(states)
+		} else {
+			for i := len(nextStates) - 1; i >= 0; i-- {
+				if !slices.Contains(states, nextStates[i]) {
+					nextStates = slices.Delete(nextStates, i, i+1)
+				}
+			}
+		}
 
-	return foundSeeds, nil
+		slices.Sort(nextStates)
+		nextStates = slices.Compact(nextStates)
+		possibleStates = nextStates
+
+		stateIndex -= dataSize
+	}
+
+	//Last rounds backwards with checks
+	for ; stateIndex >= stateDataStart; stateIndex -= dataSize {
+		for j := len(possibleStates) - 1; j >= 0; j-- {
+			prevState := BorlandRandPreviousSeed(possibleStates[j])
+			if _, output := BorlandRand(prevState); output != binary.LittleEndian.Uint16(data.KeyBlock()[stateIndex:]) {
+				possibleStates = slices.Delete(possibleStates, j, j+1)
+				continue
+			}
+			possibleStates[j] = prevState
+		}
+	}
+
+	slices.Sort(possibleStates)
+	possibleStates = slices.Compact(possibleStates)
+
+	return possibleStates, err
+}
+
+func BruteforceBorlandSeedBytes(b EncryptedBlock, material KeyMaterial) ([]uint32, error) {
+
+	data := slices.Clone(b)
+	err := data.Decrypt(material, false)
+	if err != nil {
+		return nil, err
+	}
+	// Efficient search as LCG leaks 8 bits each time, by backwards looping and solving across uint24 range
+
+	const dataSize = 1
+	const stateDataStart = EncryptedBlockMangleKeyOffset
+	const stateDataEnd = EncryptedBlockCRC1Offset - dataSize
+	const byteOutputMask = BorlandRandOutputMask & 0xFF
+	validStateBits := bits.OnesCount32(byteOutputMask)
+	validStateInverseBits := bits.OnesCount32(^byteOutputMask)
+	var stateOutputMask = byteOutputMask << BorlandRandOutputShift
+
+	statesBuf := make([]uint32, 0, 32-validStateBits)
+	getPossibleStates := func(state uint32, previousOutput uint8) (states []uint32) {
+		var seed, prevSeed uint32
+
+		states = statesBuf[:0]
+
+		var limit uint32 = 1 << validStateInverseBits
+		for n := uint32(0); n < limit; n++ {
+			// Fills the output part of the state
+			seed = (state & stateOutputMask) | ((n & (^uint32(0xFFFF))) << validStateBits) | (n & 0xFFFF)
+
+			prevSeed = BorlandRandPreviousSeed(seed)
+
+			if uint8(BorlandRandOutput(prevSeed)) == previousOutput {
+				states = append(states, prevSeed)
+			}
+		}
+		return states
+	}
+
+	var possibleStates []uint32
+
+	stateIndex := stateDataEnd
+
+	{
+		previousOutput := data.KeyBlock()[stateIndex-dataSize]
+		var nextStates []uint32
+		previousState := (uint32(data.KeyBlock()[stateIndex]) << BorlandRandOutputShift) & stateOutputMask
+		states := getPossibleStates(previousState, previousOutput)
+		if len(nextStates) == 0 {
+			slices.Sort(states)
+			states = slices.Compact(states)
+			nextStates = slices.Clone(states)
+		} else {
+			for i := len(nextStates) - 1; i >= 0; i-- {
+				if !slices.Contains(states, nextStates[i]) {
+					nextStates = slices.Delete(nextStates, i, i+1)
+				}
+			}
+		}
+
+		slices.Sort(nextStates)
+		nextStates = slices.Compact(nextStates)
+		possibleStates = nextStates
+
+		stateIndex -= dataSize
+	}
+
+	//Last rounds backwards with checks
+	for ; stateIndex >= stateDataStart; stateIndex -= dataSize {
+		for j := len(possibleStates) - 1; j >= 0; j-- {
+			prevState := BorlandRandPreviousSeed(possibleStates[j])
+			if _, output := BorlandRand(prevState); uint8(output) != data.KeyBlock()[stateIndex] {
+				possibleStates = slices.Delete(possibleStates, j, j+1)
+				continue
+			}
+			possibleStates[j] = prevState
+		}
+	}
+
+	slices.Sort(possibleStates)
+	possibleStates = slices.Compact(possibleStates)
+
+	return possibleStates, err
 }

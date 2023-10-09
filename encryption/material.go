@@ -6,6 +6,9 @@ type KeyMaterial struct {
 	OuterKeyOffset    OuterMangleKeyOffset
 	DeviceKey         *MangleKeyData
 	AlternateKeyTable *MangleKeyTable
+
+	// CRC method to calculate CRC. If none is set, default is used.
+	CRC func(data []byte) uint32
 }
 
 func NewFlashKeyMaterial(generator KeyGenerator) KeyMaterial {
